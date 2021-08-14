@@ -40,7 +40,7 @@ def test_wrapper_update(sparql_endpoint):
     rdf_files = ['tests/upper_ontology.ttl',
                  'tests/domain_ontology.ttl',
                  'tests/instance_data.ttl']
-    endpoint = sparql_endpoint(repo_uri, rdf_files)
+    endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
 
     sparql = SPARQLWrapper(endpoint=repo_uri)
     sparql.setReturnFormat(JSON)
@@ -89,7 +89,7 @@ def test_request_update_get(sparql_endpoint):
     rdf_files = ['tests/upper_ontology.ttl',
                  'tests/domain_ontology.ttl',
                  'tests/instance_data.ttl']
-    endpoint = sparql_endpoint(repo_uri, rdf_files)
+    endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
     response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
@@ -109,7 +109,7 @@ def test_request_update_post(sparql_endpoint):
     rdf_files = ['tests/upper_ontology.ttl',
                  'tests/domain_ontology.ttl',
                  'tests/instance_data.ttl']
-    endpoint = sparql_endpoint(repo_uri, rdf_files)
+    endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
     response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
@@ -129,7 +129,7 @@ def test_request_update_post_raw(sparql_endpoint):
     rdf_files = ['tests/upper_ontology.ttl',
                  'tests/domain_ontology.ttl',
                  'tests/instance_data.ttl']
-    endpoint = sparql_endpoint(repo_uri, rdf_files)
+    endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
     response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
