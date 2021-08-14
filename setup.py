@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="sparql_endpoint_fixture",
-    version="0.0.1",
+    version="0.0.2",
     author="Boris Pelakh",
     author_email="boris.pelakh@semanticarts.com",
     description="SPARQL Endpoint Fixture",
@@ -17,7 +17,7 @@ setuptools.setup(
         'rdflib[sparql]>=5.0.0',
         'SPARQLWrapper>=1.8.5',
         'pytest',
-        'requests-mock'
+        'httpretty>=1.1.3'
     ],
     classifiers=[
         "Development Status :: 4 - Beta",

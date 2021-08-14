@@ -1,15 +1,15 @@
 import os
 from urllib.parse import urlparse, parse_qs
 
+import httpretty
 import pytest
-# import requests_mock
+from httpretty.core import HTTPrettyRequest
 from rdflib import ConjunctiveGraph
 from rdflib.plugins.sparql import prepareQuery
 from rdflib.plugins.sparql.algebra import translateUpdate
 from rdflib.plugins.sparql.parser import ParseException
 from rdflib.plugins.sparql.parser import parseUpdate
 from rdflib.util import guess_format
-from requests import Request
 
 
 class Endpoint:
@@ -27,8 +27,7 @@ class Endpoint:
             # Default graph
             self.graph.parse(data=rdf, format=rdf_format)
 
-    def __init__(self, m, uri: str, initial_data: list):
-        self.mocker = m
+    def __init__(self, uri: str, initial_data: list):
         self.graph = ConjunctiveGraph()
         for arg in initial_data:
             if isinstance(arg, dict):
@@ -37,19 +36,23 @@ class Endpoint:
             else:
                 self.load_rdf(arg)
 
-        m.post(url=uri, text=self.handle_post)
-        m.get(url=uri, text=self.handle_get)
+        httpretty.register_uri(httpretty.GET, uri,
+                               body=self.handle_get)
+        httpretty.register_uri(httpretty.POST, uri,
+                               body=self.handle_post)
 
         # TODO handle GET/PUT/DELETE/POST/HEAD/PATCH for Graph Protocol
         # https://www.w3.org/TR/2013/REC-sparql11-http-rdf-update-20130321/
 
-    def handle_post(self, request: Request, context) -> str:
+    def handle_post(self, request: HTTPrettyRequest,
+                    url: str,
+                    ret_headers: dict) -> list:
         # Want the raw string, because mocker lower-cases
-        parsed = urlparse(request._request.url)
+        parsed = urlparse(url)
         qs = parse_qs(parsed.query)
         content_type = request.headers['Content-Type']
         if content_type == 'application/x-www-form-urlencoded':
-            parsed_body = parse_qs(request.text)
+            parsed_body = parse_qs(request.body.decode('utf-8'))
             if 'query' in parsed_body:
                 status, headers, text = \
                     self.process_query(parsed_body['query'][0], results_format=request.headers.get('Accept'),
@@ -64,27 +67,25 @@ class Endpoint:
                 status, headers, text = 400, {}, "Unable to parse request body"
         elif content_type == 'application/sparql-query':
             status, headers, text = \
-                self.process_query(request.text, results_format=request.headers.get('Accept'),
+                self.process_query(request.body.decode('utf-8'), results_format=request.headers.get('Accept'),
                                    graph_uris=qs.get('using-graph-uri'),
                                    named_graph_uris=qs.get('using-named-graph-uri'))
         elif content_type == 'application/sparql-update':
             status, headers, text = \
-                self.process_update(request.text,
+                self.process_update(request.body.decode('utf-8'),
                                     graph_uris=qs.get('using-graph-uri'),
                                     named_graph_uris=qs.get('using-named-graph-uri'))
         else:
             status, headers, text = 415, {}, f"Unrecognized content type: {content_type}"
 
-        context.status_code = status
-        if status != 200:
-            context.reason = text
-        context.headers.update(headers)
+        ret_headers.update(headers)
+        return [status, ret_headers, text]
 
-        return text
-
-    def handle_get(self, request: Request, context) -> str:
+    def handle_get(self, request: HTTPrettyRequest,
+                   url: str,
+                   ret_headers: dict) -> list:
         # Want the raw string, because mocker lower-cases
-        parsed = urlparse(request._request.url)
+        parsed = urlparse(url)
         qs = parse_qs(parsed.query)
         if 'query' in qs:
             status, headers, text = \
@@ -99,12 +100,8 @@ class Endpoint:
         else:
             status, headers, text = 400, {}, "Unable to parse request"
 
-        context.status_code = status
-        if status != 200:
-            context.reason = text
-        context.headers.update(headers)
-
-        return text
+        ret_headers.update(headers)
+        return [status, ret_headers, text.encode('utf-8')]
 
     TABLE_MEDIA_TYPES = {
         'text/plain': 'txt',
@@ -124,6 +121,15 @@ class Endpoint:
         'application/rdf+xml': 'xml'
     }
 
+    ASK_MEDIA_TYPES = {
+        'application/json': 'json',
+        'application/sparql-results+xml': 'xml'
+    }
+
+    @staticmethod
+    def resolve_media_type(table, all_types, default=None):
+        return next((table.get(choice) for choice in (all_types or default).split(',') if choice in table), None)
+
     def process_query(self, query, results_format=None,
                       graph_uris=None, named_graph_uris=None) -> (int, dict, str):
         try:
@@ -133,18 +139,15 @@ class Endpoint:
         # TODO patch query.algebra.datasetClause with graph_uris (FROM) and named_graph_uris (FROM NAMED)
         # parsed_query.algebra.name will be SelectQuery, ConstructQuery or AskQuery
         if parsed_query.algebra.name == 'SelectQuery':
-            if results_format is None:
-                results_format = 'application/sparql-results+xml'
-            mapped_format = self.TABLE_MEDIA_TYPES.get(results_format)
+            mapped_format = self.resolve_media_type(self.TABLE_MEDIA_TYPES, results_format,
+                                                    'application/sparql-results+xml')
         elif parsed_query.algebra.name == 'ConstructQuery':
-            if results_format is None:
-                results_format = 'application/rdf+xml'
-            mapped_format = self.RDF_MEDIA_TYPES.get(results_format)
+            mapped_format = self.resolve_media_type(self.RDF_MEDIA_TYPES, results_format,
+                                                    'application/rdf+xml')
         else:
             # Ask
-            if results_format is None:
-                results_format = 'text/plain'
-            mapped_format = self.TABLE_MEDIA_TYPES.get(results_format)
+            mapped_format = self.resolve_media_type(self.ASK_MEDIA_TYPES, results_format,
+                                                    'application/sparql-results+xml')
 
         if mapped_format is None:
             return 415, {}, f"Unsupported result type {results_format}"
@@ -158,7 +161,8 @@ class Endpoint:
                 return 200, {'Content-type': results_format}, \
                        results.graph.serialize(format=mapped_format)
             else:
-                return 200, {'content-type': results_format}, str(results.askAnswer)
+                return 200, {'Content-type': results_format}, \
+                       results.serialize(format=mapped_format).decode('utf-8')
         except Exception as e:
             return 500, {}, f"Error {e} occurred when evaluating {query}"
 
@@ -178,5 +182,12 @@ class Endpoint:
 
 
 @pytest.fixture
-def sparql_endpoint(requests_mock):
-    yield lambda uri, initial_data: Endpoint(requests_mock, uri, initial_data)
+def sparql_endpoint():
+    httpretty.set_default_thread_timeout(60)
+    httpretty.enable(verbose=True,
+                     allow_net_connect=False)  # enable HTTPretty so that it will monkey patch the socket module
+
+    yield lambda uri, initial_data: Endpoint(uri, initial_data)
+
+    httpretty.disable()  # disable afterwards, so that you will have no problems in code that uses that socket module
+    httpretty.reset()  # reset HTTPretty state (clean up registered urls and request history)

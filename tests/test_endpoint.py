@@ -1,10 +1,9 @@
-from SPARQLWrapper import SPARQLWrapper, JSON
-import pytest
+from SPARQLWrapper import SPARQLWrapper, JSON, POST
+import json
 import requests
 
 
-@pytest.mark.skip(reason="urlopen wiring not yet done")
-def test_basic_select(sparql_endpoint):
+def test_wrapper_select(sparql_endpoint):
     repo_uri = 'https://my.rdfdb.com/repo/sparql'
     rdf_files = ['tests/upper_ontology.ttl',
                  'tests/domain_ontology.ttl',
@@ -14,10 +13,54 @@ def test_basic_select(sparql_endpoint):
     query = "select distinct ?class where { [] a ?class } order by ?class"
     sparql.setQuery(query)
     sparql.setReturnFormat(JSON)
-    results = sparql.query()
+    results = sparql.query().convert()
 
-    expected = endpoint.graph.query(query).serialize(format='json')
+    expected = json.loads(endpoint.graph.query(query).serialize(format='json'))
     assert results == expected
+
+
+def test_wrapper_ask(sparql_endpoint):
+    repo_uri = 'https://my.rdfdb.com/repo/sparql'
+    rdf_files = ['tests/upper_ontology.ttl',
+                 'tests/domain_ontology.ttl',
+                 'tests/instance_data.ttl']
+    endpoint = sparql_endpoint(repo_uri, rdf_files)
+    sparql = SPARQLWrapper(endpoint=repo_uri)
+    query = "ASK { ?instance a ?class }"
+    sparql.setQuery(query)
+    sparql.setReturnFormat(JSON)
+    results = sparql.query().convert()
+
+    expected = json.loads(endpoint.graph.query(query).serialize(format='json'))
+    assert results == expected
+
+
+def test_wrapper_update(sparql_endpoint):
+    repo_uri = 'https://my.rdfdb.com/repo/sparql'
+    rdf_files = ['tests/upper_ontology.ttl',
+                 'tests/domain_ontology.ttl',
+                 'tests/instance_data.ttl']
+    endpoint = sparql_endpoint(repo_uri, rdf_files)
+
+    sparql = SPARQLWrapper(endpoint=repo_uri)
+    sparql.setReturnFormat(JSON)
+    sparql.setMethod(POST)
+
+    query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
+    sparql.setQuery(query)
+    results = sparql.query().convert()
+    assert results['results']['bindings'][0]['num']['value'] == '1'
+
+    update = "insert { ?instance a ?super } " \
+             "where { ?instance a/<http://www.w3.org/2000/01/rdf-schema#subClassOf> ?super }"
+    sparql.setQuery(update)
+    results = sparql.query()
+    assert results.info()['status'] == '200'
+
+    query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
+    sparql.setQuery(query)
+    results = sparql.query().convert()
+    assert results['results']['bindings'][0]['num']['value'] == '3'
 
 
 def test_request_get(sparql_endpoint):
@@ -49,7 +92,6 @@ def test_request_update_get(sparql_endpoint):
     endpoint = sparql_endpoint(repo_uri, rdf_files)
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
     response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
-    print(response.json())
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
 
     update = "insert { ?instance a ?super } " \
@@ -70,7 +112,6 @@ def test_request_update_post(sparql_endpoint):
     endpoint = sparql_endpoint(repo_uri, rdf_files)
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
     response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
-    print(response.json())
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
 
     update = "insert { ?instance a ?super } " \
@@ -91,7 +132,6 @@ def test_request_update_post_raw(sparql_endpoint):
     endpoint = sparql_endpoint(repo_uri, rdf_files)
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
     response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
-    print(response.json())
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
 
     update = "insert { ?instance a ?super } " \
