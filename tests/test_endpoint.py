@@ -84,6 +84,24 @@ def test_request_get(sparql_endpoint):
     assert results == expected
 
 
+def test_multiple_graphs(sparql_endpoint):
+    repo_uri = 'https://my.rdfdb.com/repo/sparql'
+    rdf_files = [{'http://example.com/graph/upper': 'tests/upper_ontology.ttl',
+                  'http://example.com/graph/domain': 'tests/domain_ontology.ttl',
+                  'http://example.com/graph/instance': 'tests/instance_data.ttl'}]
+    endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
+    query = "select ?graph (count(?s) as ?size) where { graph ?graph { ?s ?p ?o } } group by ?graph"
+    response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
+    results = dict(
+        (row['graph']['value'], row['size']['value'])
+        for row in response.json()['results']['bindings'])
+
+    expected = {'http://example.com/graph/upper': '18',
+                'http://example.com/graph/domain': '21',
+                'http://example.com/graph/instance': '15'}
+    assert results == expected
+
+
 def test_request_update_get(sparql_endpoint):
     repo_uri = 'https://my.rdfdb.com/repo/sparql'
     rdf_files = ['tests/upper_ontology.ttl',

@@ -31,7 +31,7 @@ class Endpoint:
         self.graph = ConjunctiveGraph()
         for arg in initial_data:
             if isinstance(arg, dict):
-                for graph_name, payload in arg:
+                for graph_name, payload in arg.items():
                     self.load_rdf(payload, graph=graph_name)
             else:
                 self.load_rdf(arg)
