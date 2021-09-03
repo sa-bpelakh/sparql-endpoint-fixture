@@ -4,12 +4,14 @@ from urllib.parse import urlparse, parse_qs
 import httpretty
 import pytest
 from httpretty.core import HTTPrettyRequest
-from rdflib import ConjunctiveGraph
+from rdflib import ConjunctiveGraph, URIRef
 from rdflib.plugins.sparql import prepareQuery
 from rdflib.plugins.sparql.algebra import translateUpdate
 from rdflib.plugins.sparql.parser import ParseException
 from rdflib.plugins.sparql.parser import parseUpdate
+from rdflib.plugins.sparql.parserutils import CompValue
 from rdflib.util import guess_format
+from rdflib.plugins import sparql as sparql_options
 
 
 class Endpoint:
@@ -27,8 +29,12 @@ class Endpoint:
             # Default graph
             self.graph.parse(data=rdf, format=rdf_format)
 
-    def __init__(self, uri: str, initial_data: list):
+    def __init__(self, uri: str, initial_data: list, **kwargs):
         self.graph = ConjunctiveGraph()
+        # To work in isolation, disable loading external data
+        sparql_options.SPARQL_LOAD_GRAPHS = False
+        if 'default_graph_union' in kwargs:
+            sparql_options.SPARQL_DEFAULT_GRAPH_UNION = kwargs['default_graph_union']
         for arg in initial_data:
             if isinstance(arg, dict):
                 for graph_name, payload in arg.items():
@@ -56,8 +62,8 @@ class Endpoint:
             if 'query' in parsed_body:
                 status, headers, text = \
                     self.process_query(parsed_body['query'][0], results_format=request.headers.get('Accept'),
-                                       graph_uris=qs.get('using-graph-uri'),
-                                       named_graph_uris=qs.get('using-named-graph-uri'))
+                                       graph_uris=qs.get('default-graph-uri'),
+                                       named_graph_uris=qs.get('named-graph-uri'))
             elif 'update' in parsed_body:
                 status, headers, text = \
                     self.process_update(parsed_body['update'][0],
@@ -68,8 +74,8 @@ class Endpoint:
         elif content_type == 'application/sparql-query':
             status, headers, text = \
                 self.process_query(request.body.decode('utf-8'), results_format=request.headers.get('Accept'),
-                                   graph_uris=qs.get('using-graph-uri'),
-                                   named_graph_uris=qs.get('using-named-graph-uri'))
+                                   graph_uris=qs.get('default-graph-uri'),
+                                   named_graph_uris=qs.get('named-graph-uri'))
         elif content_type == 'application/sparql-update':
             status, headers, text = \
                 self.process_update(request.body.decode('utf-8'),
@@ -90,8 +96,8 @@ class Endpoint:
         if 'query' in qs:
             status, headers, text = \
                 self.process_query(qs['query'][0], results_format=request.headers.get('Accept'),
-                                   graph_uris=qs.get('using-graph-uri'),
-                                   named_graph_uris=qs.get('using-named-graph-uri'))
+                                   graph_uris=qs.get('default-graph-uri'),
+                                   named_graph_uris=qs.get('named-graph-uri'))
         elif 'update' in qs:
             status, headers, text = \
                 self.process_update(qs['update'][0],
@@ -136,7 +142,15 @@ class Endpoint:
             parsed_query = prepareQuery(query)
         except ParseException as pe:
             return 400, {}, f"Malformed query: {pe} in {query}"
-        # TODO patch query.algebra.datasetClause with graph_uris (FROM) and named_graph_uris (FROM NAMED)
+
+        # Replace query dataset clause with graph_uris (FROM) and named_graph_uris (FROM NAMED)
+        # No attempt is made to merge the dataset clause already in the query with graph names
+        # provided in the request parameters
+        if graph_uris is not None or named_graph_uris is not None:
+            parsed_query.algebra.datasetClause = \
+                [CompValue(name='DatasetClause', vars=set(), default=URIRef(uri)) for uri in (graph_uris or [])] + \
+                [CompValue(name='DatasetClause', vars=set(), named=URIRef(uri)) for uri in (named_graph_uris or [])]
+
         # parsed_query.algebra.name will be SelectQuery, ConstructQuery or AskQuery
         if parsed_query.algebra.name == 'SelectQuery':
             mapped_format = self.resolve_media_type(self.TABLE_MEDIA_TYPES, results_format,
@@ -172,7 +186,13 @@ class Endpoint:
         except ParseException as pe:
             return 400, {}, f"Malformed UPDATE: {pe} in {query}"
 
-        # TODO patch query.algebra.datasetClause with graph_uris (FROM) and named_graph_uris (FROM NAMED)
+        # Replace query USING clause with graph_uris (FROM) and named_graph_uris (FROM NAMED)
+        # No attempt is made to merge the USING clause already in the query with graph names
+        # provided in the request parameters
+        if graph_uris is not None or named_graph_uris is not None:
+            parsed_query[0].using = \
+                [CompValue(name='DatasetClause', vars=set(), default=URIRef(uri)) for uri in (graph_uris or [])] + \
+                [CompValue(name='DatasetClause', vars=set(), named=URIRef(uri)) for uri in (named_graph_uris or [])]
 
         try:
             self.graph.update(parsed_query)
@@ -187,7 +207,7 @@ def sparql_endpoint():
     httpretty.enable(verbose=True,
                      allow_net_connect=False)  # enable HTTPretty so that it will monkey patch the socket module
 
-    yield lambda uri, initial_data: Endpoint(uri, initial_data)
+    yield lambda uri, initial_data, **kwargs: Endpoint(uri, initial_data, **kwargs)
 
     httpretty.disable()  # disable afterwards, so that you will have no problems in code that uses that socket module
     httpretty.reset()  # reset HTTPretty state (clean up registered urls and request history)

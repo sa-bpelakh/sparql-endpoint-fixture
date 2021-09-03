@@ -102,6 +102,24 @@ def test_multiple_graphs(sparql_endpoint):
     assert results == expected
 
 
+def test_multiple_graphs_inline(sparql_endpoint):
+    repo_uri = 'https://my.rdfdb.com/repo/sparql'
+    rdf_files = [{'http://example.com/graph/upper': open('tests/upper_ontology.ttl', 'r').read(),
+                  'http://example.com/graph/domain': open('tests/domain_ontology.ttl', 'r').read(),
+                  'http://example.com/graph/instance': open('tests/instance_data.ttl', 'r').read()}]
+    endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
+    query = "select ?graph (count(?s) as ?size) where { graph ?graph { ?s ?p ?o } } group by ?graph"
+    response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
+    results = dict(
+        (row['graph']['value'], row['size']['value'])
+        for row in response.json()['results']['bindings'])
+
+    expected = {'http://example.com/graph/upper': '18',
+                'http://example.com/graph/domain': '21',
+                'http://example.com/graph/instance': '15'}
+    assert results == expected
+
+
 def test_request_update_get(sparql_endpoint):
     repo_uri = 'https://my.rdfdb.com/repo/sparql'
     rdf_files = ['tests/upper_ontology.ttl',
@@ -129,7 +147,7 @@ def test_request_update_post(sparql_endpoint):
                  'tests/instance_data.ttl']
     endpoint = sparql_endpoint(repo_uri, rdf_files)  # noqa: F841
     query = "select (count(?person) as ?num) where { ?person a <http://example.com/Person> }"
-    response = requests.get(url=repo_uri, params={'query': query}, headers={'Accept': 'application/json'})
+    response = requests.post(url=repo_uri, data={'query': query}, headers={'Accept': 'application/json'})
     assert response.json()['results']['bindings'][0]['num']['value'] == '1'
 
     update = "insert { ?instance a ?super } " \
