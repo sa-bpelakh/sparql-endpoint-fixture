@@ -68,6 +68,7 @@ def test_from_named(sparql_endpoint):
     assert results == expected
 
 
+@pytest.mark.skip(reason="No longer supported after rdflib 6.2.0")
 def test_update_from_default(sparql_endpoint):
     repo_uri = 'https://my.rdfdb.com/repo/sparql'
     rdf_files = [{'http://example.com/graph/upper': 'tests/upper_ontology.ttl',
