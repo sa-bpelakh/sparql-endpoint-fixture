@@ -1,26 +1,36 @@
+"""pytest fixture for a HTTP SPARQL endpoint."""
 import os
-from urllib.parse import urlparse, parse_qs
+import re
+from typing import Dict, Tuple, List, Callable, Union
+from urllib.parse import parse_qs, urlparse
 
 import httpretty
 import pytest
 from httpretty.core import HTTPrettyRequest
+from pyparsing import ParseException
 from rdflib import ConjunctiveGraph, URIRef
+from rdflib.plugins import sparql as sparql_options
 from rdflib.plugins.sparql import prepareQuery
 from rdflib.plugins.sparql.algebra import translateUpdate
-from rdflib.plugins.sparql.parser import ParseException
 from rdflib.plugins.sparql.parser import parseUpdate
 from rdflib.plugins.sparql.parserutils import CompValue
 from rdflib.util import guess_format
-from rdflib.plugins import sparql as sparql_options
 
+# Requests result in a return code, headers and body
+RequestResult = Tuple[int, Dict[str, str], str]
+Handler = Callable[[HTTPrettyRequest], RequestResult]
+PredefinedResponse = Union[RequestResult, Handler]
 
 class Endpoint:
+    """Handles SPARQL read/write queries."""
 
     def load_rdf(self, rdf_file_or_text: str, graph: str = None):
+        """Load RDF data into graph."""
         rdf_format = 'turtle'
         if os.path.isfile(rdf_file_or_text):
             rdf_format = guess_format(rdf_file_or_text)
-            rdf = open(rdf_file_or_text, "r").read()
+            with open(rdf_file_or_text, "r", encoding='utf-8') as rdf_file:
+                rdf = rdf_file.read()
         else:
             rdf = rdf_file_or_text
         if graph:
@@ -30,6 +40,7 @@ class Endpoint:
             self.graph.parse(data=rdf, format=rdf_format)
 
     def __init__(self, uri: str, initial_data: list, **kwargs):
+        self.predefined = kwargs.get('predefined', {})
         self.graph = ConjunctiveGraph()
         # To work in isolation, disable loading external data
         sparql_options.SPARQL_LOAD_GRAPHS = False
@@ -43,42 +54,69 @@ class Endpoint:
                 self.load_rdf(arg)
 
         httpretty.register_uri(httpretty.GET, uri,
-                               body=self.handle_get)
+                               body=self._handle_get)
         httpretty.register_uri(httpretty.POST, uri,
-                               body=self.handle_post)
+                               body=self._handle_post)
 
         # TODO handle GET/PUT/DELETE/POST/HEAD/PATCH for Graph Protocol
         # https://www.w3.org/TR/2013/REC-sparql11-http-rdf-update-20130321/
 
-    def handle_post(self, request: HTTPrettyRequest,
+    def _predefined_value(self, path: str) -> PredefinedResponse:
+        """Determine if path is an exact or regex match for a predefined handler."""
+        if self.predefined:
+            print('Matching ', path, ' against ', self.predefined)
+        if path in self.predefined:
+            return self.predefined[path]
+        return next(
+            (value
+             for regex, value in self.predefined.items()
+             if isinstance(regex, re.Pattern) and regex.fullmatch(path)),
+            None)
+
+    def _predefined_response(
+        self,
+        predefined_response: PredefinedResponse,
+        request: HTTPrettyRequest) -> RequestResult:
+        """Determine a static or dynamic predefined response."""
+        print('Applying ', predefined_response, ' to ', request)
+        if callable(predefined_response):
+            applied = predefined_response(request)
+            print('Callable returned ', applied)
+            return applied
+        return predefined_response
+
+    def _handle_post(self, request: HTTPrettyRequest,
                     url: str,
                     ret_headers: dict) -> list:
         # Want the raw string, because mocker lower-cases
         parsed = urlparse(url)
         qs = parse_qs(parsed.query)
         content_type = request.headers['Content-Type']
-        if content_type == 'application/x-www-form-urlencoded':
+        predefined_match = self._predefined_value(parsed.path)
+        if predefined_match is not None:
+            status, headers, text = self._predefined_response(predefined_match, request)
+        elif content_type == 'application/x-www-form-urlencoded':
             parsed_body = parse_qs(request.body.decode('utf-8'))
             if 'query' in parsed_body:
                 status, headers, text = \
-                    self.process_query(parsed_body['query'][0], results_format=request.headers.get('Accept'),
+                    self._process_query(parsed_body['query'][0], results_format=request.headers.get('Accept'),
                                        graph_uris=qs.get('default-graph-uri'),
                                        named_graph_uris=qs.get('named-graph-uri'))
             elif 'update' in parsed_body:
                 status, headers, text = \
-                    self.process_update(parsed_body['update'][0],
+                    self._process_update(parsed_body['update'][0],
                                         graph_uris=qs.get('using-graph-uri'),
                                         named_graph_uris=qs.get('using-named-graph-uri'))
             else:
                 status, headers, text = 400, {}, "Unable to parse request body"
         elif content_type == 'application/sparql-query':
             status, headers, text = \
-                self.process_query(request.body.decode('utf-8'), results_format=request.headers.get('Accept'),
+                self._process_query(request.body.decode('utf-8'), results_format=request.headers.get('Accept'),
                                    graph_uris=qs.get('default-graph-uri'),
                                    named_graph_uris=qs.get('named-graph-uri'))
         elif content_type == 'application/sparql-update':
             status, headers, text = \
-                self.process_update(request.body.decode('utf-8'),
+                self._process_update(request.body.decode('utf-8'),
                                     graph_uris=qs.get('using-graph-uri'),
                                     named_graph_uris=qs.get('using-named-graph-uri'))
         else:
@@ -87,20 +125,23 @@ class Endpoint:
         ret_headers.update(headers)
         return [status, ret_headers, text]
 
-    def handle_get(self, request: HTTPrettyRequest,
+    def _handle_get(self, request: HTTPrettyRequest,
                    url: str,
                    ret_headers: dict) -> list:
         # Want the raw string, because mocker lower-cases
         parsed = urlparse(url)
         qs = parse_qs(parsed.query)
-        if 'query' in qs:
+        predefined_match = self._predefined_value(parsed.path)
+        if predefined_match is not None:
+            status, headers, text = self._predefined_response(predefined_match, request)
+        elif 'query' in qs:
             status, headers, text = \
-                self.process_query(qs['query'][0], results_format=request.headers.get('Accept'),
+                self._process_query(qs['query'][0], results_format=request.headers.get('Accept'),
                                    graph_uris=qs.get('default-graph-uri'),
                                    named_graph_uris=qs.get('named-graph-uri'))
         elif 'update' in qs:
             status, headers, text = \
-                self.process_update(qs['update'][0],
+                self._process_update(qs['update'][0],
                                     graph_uris=qs.get('using-graph-uri'),
                                     named_graph_uris=qs.get('using-named-graph-uri'))
         else:
@@ -133,11 +174,11 @@ class Endpoint:
     }
 
     @staticmethod
-    def resolve_media_type(table, all_types, default=None):
+    def _resolve_media_type(table, all_types, default=None):
         return next((table.get(choice) for choice in (all_types or default).split(',') if choice in table), None)
 
-    def process_query(self, query, results_format=None,
-                      graph_uris=None, named_graph_uris=None) -> (int, dict, str):
+    def _process_query(self, query, results_format=None,
+                      graph_uris=None, named_graph_uris=None) -> Tuple[int, dict, str]:
         try:
             parsed_query = prepareQuery(query)
         except ParseException as pe:
@@ -153,14 +194,14 @@ class Endpoint:
 
         # parsed_query.algebra.name will be SelectQuery, ConstructQuery or AskQuery
         if parsed_query.algebra.name == 'SelectQuery':
-            mapped_format = self.resolve_media_type(self.TABLE_MEDIA_TYPES, results_format,
+            mapped_format = self._resolve_media_type(self.TABLE_MEDIA_TYPES, results_format,
                                                     'application/sparql-results+xml')
         elif parsed_query.algebra.name == 'ConstructQuery':
-            mapped_format = self.resolve_media_type(self.RDF_MEDIA_TYPES, results_format,
+            mapped_format = self._resolve_media_type(self.RDF_MEDIA_TYPES, results_format,
                                                     'application/rdf+xml')
         else:
             # Ask
-            mapped_format = self.resolve_media_type(self.ASK_MEDIA_TYPES, results_format,
+            mapped_format = self._resolve_media_type(self.ASK_MEDIA_TYPES, results_format,
                                                     'application/sparql-results+xml')
 
         if mapped_format is None:
@@ -171,16 +212,15 @@ class Endpoint:
             if parsed_query.algebra.name == 'SelectQuery':
                 return 200, {'Content-type': results_format}, \
                        results.serialize(format=mapped_format).decode('utf-8')
-            elif parsed_query.algebra.name == 'ConstructQuery':
+            if parsed_query.algebra.name == 'ConstructQuery':
                 return 200, {'Content-type': results_format}, \
                        results.graph.serialize(format=mapped_format)
-            else:
-                return 200, {'Content-type': results_format}, \
-                       results.serialize(format=mapped_format).decode('utf-8')
+            return 200, {'Content-type': results_format}, \
+                    results.serialize(format=mapped_format).decode('utf-8')
         except Exception as e:
             return 500, {}, f"Error {e} occurred when evaluating {query}"
 
-    def process_update(self, query, graph_uris=None, named_graph_uris=None) -> (int, dict, str):
+    def _process_update(self, query, graph_uris=None, named_graph_uris=None) -> (int, dict, str):
         try:
             parsed_query = translateUpdate(parseUpdate(query))
         except ParseException as pe:
@@ -190,9 +230,10 @@ class Endpoint:
         # No attempt is made to merge the USING clause already in the query with graph names
         # provided in the request parameters
         if graph_uris is not None or named_graph_uris is not None:
-            parsed_query[0].using = \
+            parsed_query.algebra[0].datasetClause = \
                 [CompValue(name='DatasetClause', vars=set(), default=URIRef(uri)) for uri in (graph_uris or [])] + \
                 [CompValue(name='DatasetClause', vars=set(), named=URIRef(uri)) for uri in (named_graph_uris or [])]
+            print(parsed_query.__dict__)
 
         try:
             self.graph.update(parsed_query)
@@ -203,6 +244,7 @@ class Endpoint:
 
 @pytest.fixture
 def sparql_endpoint():
+    """Enable request interception, disable on teardown."""
     httpretty.set_default_thread_timeout(60)
     httpretty.enable(verbose=True,
                      allow_net_connect=False)  # enable HTTPretty so that it will monkey patch the socket module
