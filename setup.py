@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="sparql_endpoint_fixture",
-    version="1.0.0",
+    version="1.0.1",
     author="Boris Pelakh",
     author_email="boris.pelakh@semanticarts.com",
     description="SPARQL Endpoint Fixture",
@@ -18,7 +18,7 @@ setuptools.setup(
     install_requires=[
         'rdflib>=6.2.0',
         'SPARQLWrapper~=1.8.5',
-        'requests~=2.24.0',
+        'requests>=2.22.0',
         'pytest>=7.0.0',
         'httpretty~=1.1.3'
     ],
